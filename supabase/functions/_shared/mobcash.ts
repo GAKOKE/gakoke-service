@@ -232,19 +232,56 @@ export async function mobcashLogin(cfg: MobCashConfig): Promise<MobCashSession> 
   return session;
 }
 
+function deskId(d: Record<string, unknown>): number | null {
+  const n = Number(d?.CashId ?? d?.cashId ?? d?.Id ?? d?.id);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+function deskLabel(d: Record<string, unknown>): string {
+  const id = deskId(d);
+  const name = String(d?.CashName ?? d?.cashName ?? d?.Name ?? "");
+  return name ? `${id}:${name}` : String(id);
+}
+
 async function ensureCashdesk(session: MobCashSession, preferredCashId?: number) {
-  let cashId = preferredCashId;
-  if (!cashId) {
-    const desks = await getCashdesks(session);
-    const first = desks[0];
-    cashId = Number(first?.CashId ?? first?.cashId ?? first?.Id);
-    if (!cashId) {
-      throw new Error(
-        `Aucune caisse MobCash disponible: ${JSON.stringify(desks).slice(0, 300)}`,
-      );
-    }
+  // Toujours lister les caisses autorisées pour ce login (évite un CASH_ID fantôme)
+  const desks = await getCashdesks(session);
+  if (!desks.length) {
+    throw new Error(
+      "Aucune caisse MobCash liée à ce compte. Vérifie le login agent / droits caisse.",
+    );
   }
-  await switchCashdesk(session, cashId);
+
+  const ids = desks
+    .map((d) => deskId(d as Record<string, unknown>))
+    .filter((n): n is number => n != null);
+
+  let cashId = preferredCashId;
+  if (cashId && !ids.includes(cashId)) {
+    throw new Error(
+      `MOBCASH_CASH_ID=${cashId} n'appartient pas à ce compte. Caisses dispo: ${desks.map((d) => deskLabel(d as Record<string, unknown>)).join(", ")}`,
+    );
+  }
+  if (!cashId) cashId = ids[0];
+  if (!cashId) {
+    throw new Error(
+      `Impossible de lire CashId: ${JSON.stringify(desks).slice(0, 300)}`,
+    );
+  }
+
+  try {
+    await switchCashdesk(session, cashId);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    // errorCode 10 / authorization-failed : parfois la session est déjà sur la seule caisse
+    if (ids.length === 1 && /errorCode\":10|authorization-failed|Авторизация/i.test(msg)) {
+      session.cashId = cashId;
+      return;
+    }
+    throw new Error(
+      `${msg} — caisses dispo: ${desks.map((d) => deskLabel(d as Record<string, unknown>)).join(", ")}`,
+    );
+  }
   session.cashId = cashId;
 }
 
@@ -267,24 +304,32 @@ export async function getCashdesks(session: MobCashSession) {
 }
 
 export async function switchCashdesk(session: MobCashSession, cashId: number) {
-  const res = await fetch(
-    `${session.baseUrl}/agentservice/authorization/switchcashdesk`,
-    {
-      method: "POST",
-      headers: headers(session),
-      body: JSON.stringify({ CashId: cashId }),
-    },
-  );
-  const body = await readJson(res);
-  if (!res.ok) {
-    throw new Error(
-      `switchcashdesk HTTP ${res.status}: ${JSON.stringify(body)}`,
+  const payloads = [{ CashId: cashId }, { cashId }, { Id: cashId }];
+  let lastBody: unknown;
+  let lastStatus = 0;
+  for (const payload of payloads) {
+    const res = await fetch(
+      `${session.baseUrl}/agentservice/authorization/switchcashdesk`,
+      {
+        method: "POST",
+        headers: headers(session),
+        body: JSON.stringify(payload),
+      },
     );
+    const body = await readJson(res);
+    lastBody = body;
+    lastStatus = res.status;
+    if (res.ok) {
+      const next = extractAuthToken(body);
+      if (next) session.token = next;
+      return body;
+    }
+    // 409 authorization-failed : ne pas retenter d'autres formes inutilement
+    if (res.status === 409 && body?.errorCode === 10) break;
   }
-  // Certains déploiements renvoient un nouveau JWT après switch
-  const next = extractAuthToken(body);
-  if (next) session.token = next;
-  return body;
+  throw new Error(
+    `switchcashdesk HTTP ${lastStatus}: ${JSON.stringify(lastBody)}`,
+  );
 }
 
 export async function findPlayer(
