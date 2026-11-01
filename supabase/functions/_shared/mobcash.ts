@@ -99,8 +99,10 @@ function jwtClaims(token: string): Record<string, unknown> {
     if (!raw) return {};
     let b64 = raw.replace(/-/g, "+").replace(/_/g, "/");
     while (b64.length % 4) b64 += "=";
-    const json = atob(b64);
-    return JSON.parse(json) as Record<string, unknown>;
+    const bin = atob(b64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return JSON.parse(new TextDecoder().decode(bytes)) as Record<string, unknown>;
   } catch {
     return {};
   }
@@ -329,6 +331,15 @@ async function ensureCashdesk(session: MobCashSession, preferredCashId?: number)
       /errorCode\":10|authorization-failed|Авторизация/i.test(msg)
     ) {
       return;
+    }
+    if (/errorCode\":10|authorization-failed|Авторизация/i.test(msg)) {
+      throw new Error(
+        `MobCash refuse le switch caisse (errorCode 10) pour CashId=${cashId}. ` +
+          `Ouvre l'app MobCash, sélectionne « ${deskLabel(selected as Record<string, unknown>)} », ` +
+          `ferme les autres appareils/sessions, vérifie que la caisse n'est pas bloquée, puis Relancer. ` +
+          `(Sans JWT lié à la caisse, User/Get renvoie 400.) ` +
+          `${claimSummary(session)}`,
+      );
     }
     throw new Error(
       `${msg} — caisses dispo: ${desks.map((d) => deskLabel(d as Record<string, unknown>)).join(", ")}; ${claimSummary(session)}`,

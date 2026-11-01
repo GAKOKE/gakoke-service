@@ -201,12 +201,20 @@ function buildConfig(cashId?: number | null): MobCashConfig {
   const dryEnv = Deno.env.get("MOBCASH_DRY_RUN") === "1";
   const dryRun = dryEnv || !login || !password;
   const cashIdEnv = Deno.env.get("MOBCASH_CASH_ID");
+  const cashIdNum = cashIdEnv ? Number(cashIdEnv) : NaN;
+  const appGuid = Deno.env.get("MOBCASH_APP_GUID") || undefined;
+  // Device pair stable si APP_GUID fixé (évite le spam de nouveaux appareils → switch 409)
+  const userUniq = appGuid
+    ? `${appGuid.slice(0, 40)}useruniq01`
+    : undefined;
   return {
     login,
     password,
-    cashId: cashId ?? (cashIdEnv ? Number(cashIdEnv) : undefined),
+    cashId: cashId ??
+      (Number.isFinite(cashIdNum) && cashIdNum > 0 ? cashIdNum : undefined),
     baseUrl: Deno.env.get("MOBCASH_BASE_URL") || undefined,
-    appGuid: Deno.env.get("MOBCASH_APP_GUID") || undefined,
+    appGuid,
+    userUniq,
     dryRun,
   };
 }

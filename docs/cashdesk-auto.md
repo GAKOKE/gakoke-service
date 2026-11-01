@@ -70,6 +70,21 @@ supabase functions deploy cashdesk-auto
 
 Puis Admin → détail ops → **Relancer cashdesk API**.
 
+### Erreur `User/Get HTTP 400` / `switchcashdesk` errorCode 10
+
+Souvent le même problème : la session JWT **n’est pas liée à la caisse** (`CashId` / `idRef` vides après login).
+
+1. `GetCashdesks` OK mais `switchcashdesk` renvoie **409 authorization-failed** → MobCash refuse d’activer la caisse pour ce device/token.
+2. Sans switch réussi, `User/Get` répond **400 Bad Request** (ce n’est pas l’ID joueur).
+3. Actions :
+   - Ouvrir l’app **MobCash** sur le téléphone du compte caisse, sélectionner la caisse (ex. « Lome - GAKOKE »).
+   - Fermer les autres sessions / appareils connectés au même login.
+   - Vérifier `MOBCASH_CASH_ID` (chiffres uniquement, pas un libellé).
+   - Optionnel : fixer un device stable `MOBCASH_APP_GUID` (48 hex) via secrets.
+   - Puis **Relancer cashdesk API**.
+
+Après un switch OK, le JWT contient `CashId` + `idRef` (partner ref). `User/Get` doit utiliser ce `idRef`, pas le CashId.
+
 ## Limites
 
 - Pas d’API MoMo officielle ici : l’envoi Flooz/Mixx après encaissement du code reste manuel (ou phase suivante).
