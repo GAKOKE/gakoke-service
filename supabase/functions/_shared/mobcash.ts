@@ -91,17 +91,40 @@ export async function mobcashLogin(cfg: MobCashConfig): Promise<MobCashSession> 
   const ids = deviceIds(cfg);
   const bare = { ...ids, token: "" };
 
+  const login = cfg.login.trim();
+  const password = cfg.password.trim();
+  if (!login || !password) {
+    throw new Error("MobCash: MOBCASH_LOGIN / MOBCASH_PASSWORD vides");
+  }
+
   const res = await fetch(`${baseUrl}/agentservice/authorization/auth`, {
     method: "POST",
     headers: headers(bare, false),
     body: JSON.stringify({
-      Login: cfg.login,
-      Password: cfg.password,
+      Login: login,
+      Password: password,
       Version: cfg.version || "62.1",
     }),
   });
   const body = await readJson(res);
   if (!res.ok) {
+    const title =
+      (body && typeof body === "object" && "title" in body && body.title) ||
+      null;
+    const code =
+      (body && typeof body === "object" && "errorCode" in body && body.errorCode) ||
+      null;
+    // errorCode 8 = incorrect login/password (CashAuthService)
+    if (res.status === 409 || code === 8) {
+      const err = new Error(
+        title
+          ? `MobCash: ${title} Vérifie MOBCASH_LOGIN / MOBCASH_PASSWORD (compte caisse MobCash, pas ton e-mail Gakoke).`
+          : "MobCash: identifiants caisse incorrects (MOBCASH_LOGIN / MOBCASH_PASSWORD).",
+      ) as Error & { status?: number; code?: string };
+      err.status = 401;
+      err.code = "mobcash_auth";
+      throw err;
+    }
     throw new Error(`MobCash auth HTTP ${res.status}: ${JSON.stringify(body)}`);
   }
 

@@ -50,6 +50,24 @@ Puis Admin → Config → cocher auto-dépôt / auto-retrait.
 2. Liquidité sur le compte caisse.
 3. Test dry-run puis un dépôt réel à petit montant.
 
+### Erreur `incorrect-login-or-password` (HTTP 409 / errorCode 8)
+
+Les secrets atteignent bien MobCash, mais le **login ou mot de passe caisse est faux**.
+
+- Utiliser le login **MobCash / caisse 1xBet** (app agent), **pas** l’e-mail Gakoke (`…@gmail.com`).
+- Pas d’espaces en début/fin dans les secrets Supabase.
+- Après correction :
+
+```bash
+supabase secrets set \
+  MOBCASH_LOGIN='login_caisse' \
+  MOBCASH_PASSWORD='mdp_caisse' \
+  MOBCASH_CASH_ID='...'
+supabase functions deploy cashdesk-auto
+```
+
+Puis Admin → détail ops → **Relancer cashdesk API**.
+
 ## Limites
 
 - Pas d’API MoMo officielle ici : l’envoi Flooz/Mixx après encaissement du code reste manuel (ou phase suivante).

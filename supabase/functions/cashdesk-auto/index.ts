@@ -121,12 +121,17 @@ Deno.serve(async (req) => {
           .single();
         return json({ ok: true, dryRun: dry, transaction: updated, result });
       } catch (e) {
-        const msg = String(e);
+        const err = e as Error & { status?: number; code?: string };
+        const msg = err.message || String(e);
+        const status = err.status === 401 ? 401 : 502;
         await mark(admin, tx.id, {
           cashdesk_status: "failed",
           cashdesk_error: msg,
         });
-        return json({ error: msg, cashdesk_status: "failed" }, 502);
+        return json(
+          { error: msg, cashdesk_status: "failed", code: err.code },
+          status,
+        );
       }
     }
 
@@ -170,12 +175,17 @@ Deno.serve(async (req) => {
           .single();
         return json({ ok: true, dryRun: dry, transaction: updated, result });
       } catch (e) {
-        const msg = String(e);
+        const err = e as Error & { status?: number; code?: string };
+        const msg = err.message || String(e);
+        const status = err.status === 401 ? 401 : 502;
         await mark(admin, tx.id, {
           cashdesk_status: "failed",
           cashdesk_error: msg,
         });
-        return json({ error: msg, cashdesk_status: "failed" }, 502);
+        return json(
+          { error: msg, cashdesk_status: "failed", code: err.code },
+          status,
+        );
       }
     }
 
