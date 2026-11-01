@@ -1,6 +1,6 @@
 /**
  * Client MobCash (caisse 1xBet / BetWinner) — secrets uniquement côté Edge Function.
- * Découverte DNS dynamique + auth + dépôt / retrait.
+ * Découverte DNS dynamique + auth + switch caisse + dépôt / retrait.
  * MFA/TOTP non supporté : désactiver la 2FA sur le compte caisse.
  */
 
@@ -25,6 +25,7 @@ export type MobCashSession = {
   appGuid: string;
   userUniq: string;
   mobModel: string;
+  cashId?: number;
 };
 
 async function resolveBaseUrl(explicit?: string): Promise<string> {
@@ -57,6 +58,7 @@ function headers(
 ) {
   const h: Record<string, string> = {
     "content-type": "application/json",
+    accept: "application/json",
     "user-agent": "mobCash/62.1",
     appguid: session.appGuid,
     mobuniq: session.appGuid,
@@ -66,8 +68,11 @@ function headers(
     "x-whence": "18",
   };
   if (withAuth && session.token) {
-    h.authorization = `Bearer ${session.token}`;
-    h["x-auth"] = `Bearer ${session.token}`;
+    const raw = session.token.replace(/^Bearer\s+/i, "");
+    // L'app mobile envoie souvent les deux formes
+    h.authorization = `Bearer ${raw}`;
+    h["x-auth"] = `Bearer ${raw}`;
+    h["X-Auth"] = `Bearer ${raw}`;
   }
   return h;
 }
@@ -79,6 +84,63 @@ async function readJson(res: Response) {
   } catch {
     return { raw: text, status: res.status };
   }
+}
+
+function isJwtLike(v: unknown): v is string {
+  return typeof v === "string" && /^eyJ[A-Za-z0-9_-]+\./.test(v);
+}
+
+/** Cherche un JWT dans la réponse auth (structures MobCash variables). */
+function extractAuthToken(body: unknown): string | null {
+  if (!body || typeof body !== "object") return null;
+  const o = body as Record<string, unknown>;
+  const preferred = [
+    o.Token,
+    o.AccessToken,
+    o.Jwt,
+    o.jwt,
+    o.access_token,
+    o.AuthToken,
+    (o.Data as Record<string, unknown> | undefined)?.Token,
+    (o.Data as Record<string, unknown> | undefined)?.AccessToken,
+    (o.Data as Record<string, unknown> | undefined)?.Jwt,
+    (o.data as Record<string, unknown> | undefined)?.token,
+    (o.data as Record<string, unknown> | undefined)?.accessToken,
+    ((o.Data as Record<string, unknown> | undefined)?.Auth as Record<
+      string,
+      unknown
+    > | undefined)?.Token,
+    ((o.Data as Record<string, unknown> | undefined)?.User as Record<
+      string,
+      unknown
+    > | undefined)?.Token,
+  ];
+  for (const c of preferred) {
+    if (isJwtLike(c)) return c;
+    if (typeof c === "string" && c.length > 20) return c;
+  }
+  // Deep scan for JWT
+  const stack: unknown[] = [body];
+  while (stack.length) {
+    const cur = stack.pop();
+    if (isJwtLike(cur)) return cur;
+    if (cur && typeof cur === "object") {
+      for (const v of Object.values(cur as Record<string, unknown>)) {
+        stack.push(v);
+      }
+    }
+  }
+  return null;
+}
+
+function authResponseKeys(body: unknown): string[] {
+  if (!body || typeof body !== "object") return [];
+  const keys = Object.keys(body as object);
+  const data = (body as Record<string, unknown>).Data;
+  if (data && typeof data === "object") {
+    keys.push(...Object.keys(data as object).map((k) => `Data.${k}`));
+  }
+  return keys;
 }
 
 export async function mobcashLogin(cfg: MobCashConfig): Promise<MobCashSession> {
@@ -143,27 +205,65 @@ export async function mobcashLogin(cfg: MobCashConfig): Promise<MobCashSession> 
     throw err;
   }
 
-  const token =
-    body?.Data?.Token ||
-    body?.Token ||
-    body?.AccessToken ||
-    body?.data?.token;
+  const token = extractAuthToken(body);
   if (!token) {
-    throw new Error(`MobCash auth: token manquant — ${JSON.stringify(body)}`);
+    throw new Error(
+      `MobCash auth: token manquant (clés: ${authResponseKeys(body).join(", ")}) — ${JSON.stringify(body).slice(0, 500)}`,
+    );
   }
 
   const session: MobCashSession = {
     baseUrl,
     token,
-    refreshToken: body?.Data?.RefreshToken || body?.RefreshToken,
+    refreshToken:
+      extractAuthToken({
+        t: body?.Data?.RefreshToken || body?.RefreshToken,
+      }) ||
+      (typeof body?.Data?.RefreshToken === "string"
+        ? body.Data.RefreshToken
+        : undefined) ||
+      (typeof body?.RefreshToken === "string" ? body.RefreshToken : undefined),
     ...ids,
   };
 
-  if (cfg.cashId) {
-    await switchCashdesk(session, cfg.cashId);
-  }
+  // cashdbcore exige souvent une caisse active
+  await ensureCashdesk(session, cfg.cashId);
 
   return session;
+}
+
+async function ensureCashdesk(session: MobCashSession, preferredCashId?: number) {
+  let cashId = preferredCashId;
+  if (!cashId) {
+    const desks = await getCashdesks(session);
+    const first = desks[0];
+    cashId = Number(first?.CashId ?? first?.cashId ?? first?.Id);
+    if (!cashId) {
+      throw new Error(
+        `Aucune caisse MobCash disponible: ${JSON.stringify(desks).slice(0, 300)}`,
+      );
+    }
+  }
+  await switchCashdesk(session, cashId);
+  session.cashId = cashId;
+}
+
+export async function getCashdesks(session: MobCashSession) {
+  const res = await fetch(`${session.baseUrl}/cashdbcore/GetCashdesks`, {
+    method: "GET",
+    headers: headers(session),
+  });
+  const body = await readJson(res);
+  if (!res.ok) {
+    throw new Error(
+      `GetCashdesks HTTP ${res.status}: token_ok=${isJwtLike(session.token)} ${JSON.stringify(body)}`,
+    );
+  }
+  const data = body?.Data ?? body?.data ?? body;
+  if (Array.isArray(data)) return data;
+  if (Array.isArray(data?.Items)) return data.Items;
+  if (Array.isArray(data?.Cashdesks)) return data.Cashdesks;
+  return [];
 }
 
 export async function switchCashdesk(session: MobCashSession, cashId: number) {
@@ -181,6 +281,9 @@ export async function switchCashdesk(session: MobCashSession, cashId: number) {
       `switchcashdesk HTTP ${res.status}: ${JSON.stringify(body)}`,
     );
   }
+  // Certains déploiements renvoient un nouveau JWT après switch
+  const next = extractAuthToken(body);
+  if (next) session.token = next;
   return body;
 }
 
@@ -189,16 +292,27 @@ export async function findPlayer(
   playerId: string,
   refId = 1,
 ) {
-  const res = await fetch(`${session.baseUrl}/cashdbcore/User/Get`, {
-    method: "POST",
-    headers: headers(session),
-    body: JSON.stringify({ refId, userId: String(playerId) }),
-  });
-  const body = await readJson(res);
-  if (!res.ok) {
-    throw new Error(`User/Get HTTP ${res.status}: ${JSON.stringify(body)}`);
+  const payloads = [
+    { refId, userId: String(playerId) },
+    { RefId: refId, UserId: String(playerId) },
+    { userId: String(playerId) },
+  ];
+  let lastErr = "";
+  for (const payload of payloads) {
+    const res = await fetch(`${session.baseUrl}/cashdbcore/User/Get`, {
+      method: "POST",
+      headers: headers(session),
+      body: JSON.stringify(payload),
+    });
+    const body = await readJson(res);
+    if (res.ok) return body;
+    lastErr = `User/Get HTTP ${res.status}: ${JSON.stringify(body)}`;
+    // Si 401, inutile d'essayer d'autres payloads
+    if (res.status === 401) break;
   }
-  return body;
+  throw new Error(
+    `${lastErr} (cashId=${session.cashId ?? "?"} jwt=${isJwtLike(session.token)})`,
+  );
 }
 
 export async function depositAdd(
@@ -235,10 +349,6 @@ export async function findPayoutByCode(session: MobCashSession, code: string) {
   return body;
 }
 
-/**
- * Confirmation payout — chemin configurable (doc publique incomplète).
- * Défaut: POST /cashdbcore/Deposit/PayOut
- */
 export async function confirmPayout(
   session: MobCashSession,
   payload: Record<string, unknown>,
@@ -289,10 +399,12 @@ export async function autoDepositPlayer(
   const player = await findPlayer(session, playerId);
   const userToken = extractUserToken(player);
   if (!userToken) {
-    throw new Error(`Joueur ${playerId} introuvable / token manquant`);
+    throw new Error(
+      `Joueur ${playerId} introuvable / token manquant: ${JSON.stringify(player).slice(0, 400)}`,
+    );
   }
   const result = await depositAdd(session, amount, userToken);
-  return { player, result, baseUrl: session.baseUrl };
+  return { player, result, baseUrl: session.baseUrl, cashId: session.cashId };
 }
 
 export async function autoWithdrawByCode(
@@ -333,5 +445,5 @@ export async function autoWithdrawByCode(
     { Token: token, Code: code, Amount: sum },
     confirmPath,
   );
-  return { found, confirmed, sum, baseUrl: session.baseUrl };
+  return { found, confirmed, sum, baseUrl: session.baseUrl, cashId: session.cashId };
 }
