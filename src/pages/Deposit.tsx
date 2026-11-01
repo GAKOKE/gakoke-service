@@ -3,7 +3,8 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { StatusBadge } from "../components/StatusBadge";
 import { formatAmount } from "../lib/format";
-import { invokeFunction, supabase } from "../lib/supabase";
+import { attachDepositRef, createDeposit as createDepositOp } from "../lib/ops";
+import { supabase } from "../lib/supabase";
 import type { PaymentMethod, PlayerAccount, Settings, Transaction } from "../lib/types";
 
 export function Deposit() {
@@ -39,12 +40,12 @@ export function Deposit() {
     setBusy(true);
     setError(null);
     try {
-      const data = await invokeFunction<{ transaction: Transaction }>("deposit", {
+      const transaction = await createDepositOp({
         player_account_id: playerAccountId,
         payment_method_id: methodId,
         amount: Number(amount),
       });
-      setTx(data.transaction);
+      setTx(transaction);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -58,12 +59,11 @@ export function Deposit() {
     setBusy(true);
     setError(null);
     try {
-      const data = await invokeFunction<{ transaction: Transaction }>("deposit", {
-        action: "attach_ref",
+      const transaction = await attachDepositRef({
         transaction_id: tx.id,
         payment_ref: paymentRef,
       });
-      setTx(data.transaction);
+      setTx(transaction);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {

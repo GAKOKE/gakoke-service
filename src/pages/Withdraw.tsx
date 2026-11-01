@@ -1,8 +1,9 @@
 import type { FormEvent } from "react";
 import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { invokeFunction, supabase } from "../lib/supabase";
-import type { PaymentMethod, PlayerAccount, Settings, Transaction } from "../lib/types";
+import { createWithdrawal } from "../lib/ops";
+import { supabase } from "../lib/supabase";
+import type { PaymentMethod, PlayerAccount, Settings } from "../lib/types";
 
 export function Withdraw() {
   const navigate = useNavigate();
@@ -36,7 +37,7 @@ export function Withdraw() {
     setBusy(true);
     setError(null);
     try {
-      await invokeFunction<{ transaction: Transaction }>("withdraw", {
+      await createWithdrawal({
         player_account_id: playerAccountId,
         payment_method_id: methodId,
         amount: Number(amount),

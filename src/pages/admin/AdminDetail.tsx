@@ -3,7 +3,8 @@ import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { StatusBadge } from "../../components/StatusBadge";
 import { formatAmount, formatDate, typeLabel } from "../../lib/format";
-import { invokeFunction, supabase } from "../../lib/supabase";
+import { adminUpdateTx } from "../../lib/ops";
+import { supabase } from "../../lib/supabase";
 import type { Transaction } from "../../lib/types";
 
 export function AdminDetail() {
@@ -36,16 +37,13 @@ export function AdminDetail() {
     setBusy(true);
     setError(null);
     try {
-      const data = await invokeFunction<{ transaction: Transaction }>(
-        "admin-update-tx",
-        {
-          transaction_id: tx.id,
-          status,
-          admin_note: adminNote,
-          rejection_reason: rejectionReason,
-        },
-      );
-      setTx(data.transaction);
+      const updated = await adminUpdateTx({
+        transaction_id: tx.id,
+        status,
+        admin_note: adminNote,
+        rejection_reason: rejectionReason,
+      });
+      setTx(updated);
       await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
