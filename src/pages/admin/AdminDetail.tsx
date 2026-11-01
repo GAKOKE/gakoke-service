@@ -7,13 +7,9 @@ import { adminUpdateTx } from "../../lib/ops";
 import { supabase } from "../../lib/supabase";
 import type { Transaction } from "../../lib/types";
 
-async function retryCashdesk(transactionId: string, totpCode?: string) {
+async function retryCashdesk(transactionId: string) {
   const { data, error } = await supabase.functions.invoke("cashdesk-auto", {
-    body: {
-      transaction_id: transactionId,
-      force: true,
-      totp_code: totpCode?.trim() || undefined,
-    },
+    body: { transaction_id: transactionId, force: true },
   });
   if (error) throw new Error(error.message);
   if (data?.error) throw new Error(data.error);
@@ -25,7 +21,6 @@ export function AdminDetail() {
   const [tx, setTx] = useState<Transaction | null>(null);
   const [adminNote, setAdminNote] = useState("");
   const [rejectionReason, setRejectionReason] = useState("");
-  const [totpCode, setTotpCode] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -192,17 +187,6 @@ export function AdminDetail() {
             </form>
           )}
 
-          <label className="field">
-            Code TOTP MobCash (si 2FA)
-            <input
-              inputMode="numeric"
-              autoComplete="one-time-code"
-              placeholder="6 chiffres"
-              maxLength={8}
-              value={totpCode}
-              onChange={(e) => setTotpCode(e.target.value)}
-            />
-          </label>
           <button
             type="button"
             className="btn btn-ghost btn-block"
@@ -211,9 +195,8 @@ export function AdminDetail() {
               setBusy(true);
               setError(null);
               try {
-                const updated = await retryCashdesk(tx.id, totpCode);
+                const updated = await retryCashdesk(tx.id);
                 if (updated) setTx(updated);
-                setTotpCode("");
                 await load();
               } catch (err) {
                 setError(err instanceof Error ? err.message : String(err));

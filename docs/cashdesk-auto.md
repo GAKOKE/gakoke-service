@@ -9,6 +9,8 @@ Quand l’utilisateur **termine** son action :
 
 Flags admin (**Config**) : `auto_deposit`, `auto_withdrawal` (défaut **off**).
 
+**2FA / TOTP :** non supporté côté Gakoke. Laisser la 2FA **désactivée** sur le compte caisse MobCash.
+
 ## Secrets (Edge Function `cashdesk-auto`)
 
 À définir dans le Dashboard Supabase → Edge Functions → Secrets, ou :
@@ -24,23 +26,12 @@ Optionnels :
 
 | Secret | Rôle |
 |---|---|
-| `MOBCASH_TOTP_SECRET` | Secret **base32** de l’app d’authentification (2FA) — génère le code automatiquement |
 | `MOBCASH_BASE_URL` | Forcer le host (sinon DNS `mob-kassa.bet-1x.com`) |
 | `MOBCASH_APP_GUID` | ID appareil stable |
 | `MOBCASH_DRY_RUN=1` | Simule sans appeler l’API |
 | `MOBCASH_PAYOUT_CONFIRM_PATH` | Défaut `/cashdbcore/Deposit/PayOut` |
 
 Sans `MOBCASH_LOGIN` / `PASSWORD`, le mode **dry-run** s’active automatiquement.
-
-### MFA / TOTP (`MfaIsNeeded: true`)
-
-Si le compte caisse a la 2FA :
-
-1. **Auto (recommandé)** : enregistrer le secret TOTP base32  
-   `supabase secrets set MOBCASH_TOTP_SECRET='JBSWY3DPEHPK3PXP...'`
-2. **Manuel** : sur Admin → détail op → champ **Code TOTP** puis Relancer cashdesk API.
-
-Endpoint MobCash : `POST /agentservice/authorization/mfa` avec `MfaRequestType: 1` (TOTP).
 
 ## Déploiement
 
@@ -57,7 +48,7 @@ Puis Admin → Config → cocher auto-dépôt / auto-retrait.
 
 ## Prérequis métier
 
-1. Compte **caisse opérateur** MobCash / 1xBet ouvert (login + cashdesk).
+1. Compte **caisse opérateur** MobCash / 1xBet ouvert (login + cashdesk), **sans 2FA**.
 2. Liquidité sur le compte caisse.
 3. Test dry-run puis un dépôt réel à petit montant.
 
@@ -65,7 +56,7 @@ Puis Admin → Config → cocher auto-dépôt / auto-retrait.
 
 Les secrets atteignent bien MobCash, mais le **login ou mot de passe caisse est faux**.
 
-- Utiliser le login **MobCash / caisse 1xBet** (app agent), **pas** l’e-mail Gakoke (`…@gmail.com`).
+- Utiliser le login **MobCash / caisse 1xBet** (app agent), **pas** l’e-mail Gakoke.
 - Pas d’espaces en début/fin dans les secrets Supabase.
 - Après correction :
 
@@ -83,4 +74,4 @@ Puis Admin → détail ops → **Relancer cashdesk API**.
 
 - Pas d’API MoMo officielle ici : l’envoi Flooz/Mixx après encaissement du code reste manuel (ou phase suivante).
 - Le chemin exact de confirmation payout peut varier selon la version MobCash — ajustable via `MOBCASH_PAYOUT_CONFIRM_PATH`.
-- Ne pas confondre avec le wrapper tiers CashdeskBotAPI (`partners.servcul.com`) utilisé ailleurs : Gakoke parle **MobCash** directement.
+- Ne pas confondre avec le wrapper tiers CashdeskBotAPI (`partners.servcul.com`) : Gakoke parle **MobCash** directement.

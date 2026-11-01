@@ -1,6 +1,7 @@
 /**
  * Client MobCash (caisse 1xBet / BetWinner) — secrets uniquement côté Edge Function.
  * Découverte DNS dynamique + auth + dépôt / retrait.
+ * MFA/TOTP non supporté : désactiver la 2FA sur le compte caisse.
  */
 
 export type MobCashConfig = {
@@ -15,58 +16,7 @@ export type MobCashConfig = {
   baseUrl?: string;
   /** Dry-run: n'appelle pas l'API réelle */
   dryRun?: boolean;
-  /** Secret TOTP base32 (automatisation serveur) */
-  totpSecret?: string;
-  /** Code TOTP à usage unique (saisie admin) */
-  totpCode?: string;
 };
-
-/** Enum CashDesk MfaRequestType — TOTP = 1 */
-const MFA_TYPE_TOTP = 1;
-
-/** RFC 6238 TOTP (SHA-1, 30s, 6 digits) from base32 secret. */
-export async function generateTotp(
-  base32Secret: string,
-  stepSeconds = 30,
-  digits = 6,
-): Promise<string> {
-  const key = base32ToBytes(base32Secret.replace(/\s+/g, "").toUpperCase());
-  const counter = Math.floor(Date.now() / 1000 / stepSeconds);
-  const buf = new ArrayBuffer(8);
-  const view = new DataView(buf);
-  view.setUint32(4, counter); // big-endian low 32 (enough for years)
-  const cryptoKey = await crypto.subtle.importKey(
-    "raw",
-    key,
-    { name: "HMAC", hash: "SHA-1" },
-    false,
-    ["sign"],
-  );
-  const mac = new Uint8Array(await crypto.subtle.sign("HMAC", cryptoKey, buf));
-  const offset = mac[mac.length - 1] & 0x0f;
-  const bin =
-    ((mac[offset] & 0x7f) << 24) |
-    ((mac[offset + 1] & 0xff) << 16) |
-    ((mac[offset + 2] & 0xff) << 8) |
-    (mac[offset + 3] & 0xff);
-  const otp = bin % 10 ** digits;
-  return String(otp).padStart(digits, "0");
-}
-
-function base32ToBytes(secret: string): Uint8Array {
-  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
-  let bits = "";
-  for (const c of secret) {
-    const val = alphabet.indexOf(c);
-    if (val < 0) continue;
-    bits += val.toString(2).padStart(5, "0");
-  }
-  const bytes = [];
-  for (let i = 0; i + 8 <= bits.length; i += 8) {
-    bytes.push(parseInt(bits.slice(i, i + 8), 2));
-  }
-  return new Uint8Array(bytes);
-}
 
 export type MobCashSession = {
   baseUrl: string;
@@ -91,15 +41,20 @@ async function resolveBaseUrl(explicit?: string): Promise<string> {
 function deviceIds(cfg: MobCashConfig) {
   const appGuid =
     cfg.appGuid ||
-    crypto.randomUUID().replace(/-/g, "") + crypto.randomUUID().replace(/-/g, "").slice(0, 8);
+    crypto.randomUUID().replace(/-/g, "") +
+      crypto.randomUUID().replace(/-/g, "").slice(0, 8);
   const userUniq =
     cfg.userUniq ||
-    crypto.randomUUID().replace(/-/g, "") + crypto.randomUUID().replace(/-/g, "").slice(0, 8);
+    crypto.randomUUID().replace(/-/g, "") +
+      crypto.randomUUID().replace(/-/g, "").slice(0, 8);
   const mobModel = cfg.mobModel || "GakokeServer/1.0";
   return { appGuid, userUniq, mobModel };
 }
 
-function headers(session: Pick<MobCashSession, "appGuid" | "userUniq" | "mobModel" | "token">, withAuth = true) {
+function headers(
+  session: Pick<MobCashSession, "appGuid" | "userUniq" | "mobModel" | "token">,
+  withAuth = true,
+) {
   const h: Record<string, string> = {
     "content-type": "application/json",
     "user-agent": "mobCash/62.1",
@@ -163,9 +118,9 @@ export async function mobcashLogin(cfg: MobCashConfig): Promise<MobCashSession> 
       (body && typeof body === "object" && "title" in body && body.title) ||
       null;
     const code =
-      (body && typeof body === "object" && "errorCode" in body && body.errorCode) ||
+      (body && typeof body === "object" && "errorCode" in body &&
+        body.errorCode) ||
       null;
-    // errorCode 8 = incorrect login/password (CashAuthService)
     if (res.status === 409 || code === 8) {
       const err = new Error(
         title
@@ -179,60 +134,28 @@ export async function mobcashLogin(cfg: MobCashConfig): Promise<MobCashSession> 
     throw new Error(`MobCash auth HTTP ${res.status}: ${JSON.stringify(body)}`);
   }
 
-  let authBody = body;
-
-  // MFA TOTP challenge
-  if (authBody?.MfaIsNeeded || authBody?.Data?.MfaIsNeeded) {
-    const mfaToken =
-      authBody.MfaToken ||
-      authBody.Data?.MfaToken ||
-      authBody.mfaToken;
-    const mfaType =
-      authBody.MfaRequestType ||
-      authBody.Data?.MfaRequestType ||
-      "TOTP";
-    if (!mfaToken) {
-      throw new Error(`MobCash MFA requis mais MfaToken manquant: ${JSON.stringify(authBody)}`);
-    }
-    if (String(mfaType).toUpperCase() !== "TOTP" && mfaType !== MFA_TYPE_TOTP) {
-      throw new Error(`MobCash MFA type non supporté: ${mfaType}`);
-    }
-
-    let code = cfg.totpCode?.trim();
-    if (!code && cfg.totpSecret?.trim()) {
-      code = await generateTotp(cfg.totpSecret.trim());
-    }
-    if (!code) {
-      const err = new Error(
-        "MobCash exige un code TOTP (2FA). Configure MOBCASH_TOTP_SECRET (secret base32) ou saisis un code à 6 chiffres au relancement.",
-      ) as Error & { status?: number; code?: string };
-      err.status = 401;
-      err.code = "mobcash_mfa_required";
-      throw err;
-    }
-
-    authBody = await verifyMfa(baseUrl, bare, {
-      login,
-      password,
-      version: cfg.version || "62.1",
-      mfaToken,
-      mfaAnswer: code,
-    });
+  if (body?.MfaIsNeeded || body?.Data?.MfaIsNeeded) {
+    const err = new Error(
+      "MobCash demande encore une 2FA. Désactive le TOTP sur le compte caisse (paramètres MobCash).",
+    ) as Error & { status?: number; code?: string };
+    err.status = 401;
+    err.code = "mobcash_mfa_enabled";
+    throw err;
   }
 
   const token =
-    authBody?.Data?.Token ||
-    authBody?.Token ||
-    authBody?.AccessToken ||
-    authBody?.data?.token;
+    body?.Data?.Token ||
+    body?.Token ||
+    body?.AccessToken ||
+    body?.data?.token;
   if (!token) {
-    throw new Error(`MobCash auth: token manquant — ${JSON.stringify(authBody)}`);
+    throw new Error(`MobCash auth: token manquant — ${JSON.stringify(body)}`);
   }
 
   const session: MobCashSession = {
     baseUrl,
     token,
-    refreshToken: authBody?.Data?.RefreshToken || authBody?.RefreshToken,
+    refreshToken: body?.Data?.RefreshToken || body?.RefreshToken,
     ...ids,
   };
 
@@ -241,50 +164,6 @@ export async function mobcashLogin(cfg: MobCashConfig): Promise<MobCashSession> 
   }
 
   return session;
-}
-
-async function verifyMfa(
-  baseUrl: string,
-  bare: { appGuid: string; userUniq: string; mobModel: string; token: string },
-  input: {
-    login: string;
-    password: string;
-    version: string;
-    mfaToken: string;
-    mfaAnswer: string;
-  },
-) {
-  const res = await fetch(`${baseUrl}/agentservice/authorization/mfa`, {
-    method: "POST",
-    headers: headers(bare, false),
-    body: JSON.stringify({
-      request: {
-        Login: input.login,
-        Password: input.password,
-        Version: input.version,
-      },
-      MfaToken: input.mfaToken,
-      MfaRequestType: MFA_TYPE_TOTP,
-      MfaAnswer: input.mfaAnswer,
-    }),
-  });
-  const body = await readJson(res);
-  if (!res.ok) {
-    const title = body?.title;
-    const code = body?.errorCode;
-    if (res.status === 409 || code === 13) {
-      const err = new Error(
-        title
-          ? `MobCash MFA: ${title}`
-          : "MobCash MFA: code TOTP incorrect ou expiré.",
-      ) as Error & { status?: number; code?: string };
-      err.status = 401;
-      err.code = "mobcash_mfa_invalid";
-      throw err;
-    }
-    throw new Error(`MobCash MFA HTTP ${res.status}: ${JSON.stringify(body)}`);
-  }
-  return body;
 }
 
 export async function switchCashdesk(session: MobCashSession, cashId: number) {
@@ -298,7 +177,9 @@ export async function switchCashdesk(session: MobCashSession, cashId: number) {
   );
   const body = await readJson(res);
   if (!res.ok) {
-    throw new Error(`switchcashdesk HTTP ${res.status}: ${JSON.stringify(body)}`);
+    throw new Error(
+      `switchcashdesk HTTP ${res.status}: ${JSON.stringify(body)}`,
+    );
   }
   return body;
 }
@@ -342,11 +223,14 @@ export async function depositAdd(
 }
 
 export async function findPayoutByCode(session: MobCashSession, code: string) {
-  const url = `${session.baseUrl}/cashdbcore/Deposit/FindPayoutByCode?code=${encodeURIComponent(code)}`;
+  const url =
+    `${session.baseUrl}/cashdbcore/Deposit/FindPayoutByCode?code=${encodeURIComponent(code)}`;
   const res = await fetch(url, { headers: headers(session) });
   const body = await readJson(res);
   if (!res.ok) {
-    throw new Error(`FindPayoutByCode HTTP ${res.status}: ${JSON.stringify(body)}`);
+    throw new Error(
+      `FindPayoutByCode HTTP ${res.status}: ${JSON.stringify(body)}`,
+    );
   }
   return body;
 }
@@ -367,13 +251,18 @@ export async function confirmPayout(
   });
   const body = await readJson(res);
   if (!res.ok) {
-    throw new Error(`PayOut confirm HTTP ${res.status}: ${JSON.stringify(body)}`);
+    throw new Error(
+      `PayOut confirm HTTP ${res.status}: ${JSON.stringify(body)}`,
+    );
   }
   return body;
 }
 
 function extractUserToken(playerBody: Record<string, unknown>): string | null {
-  const d = (playerBody?.Data || playerBody?.data || playerBody) as Record<string, unknown>;
+  const d = (playerBody?.Data || playerBody?.data || playerBody) as Record<
+    string,
+    unknown
+  >;
   return (
     (d?.Token as string) ||
     (d?.UserToken as string) ||
@@ -423,7 +312,11 @@ export async function autoWithdrawByCode(
   const found = await findPayoutByCode(session, code);
   const data = (found?.Data || found?.data || found) as Record<string, unknown>;
   const sum = Number(data?.Sum ?? data?.sum ?? data?.Amount);
-  if (expectedAmount != null && Number.isFinite(sum) && Math.abs(sum - expectedAmount) > 0.01) {
+  if (
+    expectedAmount != null &&
+    Number.isFinite(sum) &&
+    Math.abs(sum - expectedAmount) > 0.01
+  ) {
     throw new Error(
       `Montant code (${sum}) ≠ montant demandé (${expectedAmount})`,
     );
@@ -433,7 +326,8 @@ export async function autoWithdrawByCode(
     throw new Error(`Token payout manquant: ${JSON.stringify(found)}`);
   }
   const confirmPath =
-    Deno.env.get("MOBCASH_PAYOUT_CONFIRM_PATH") || "/cashdbcore/Deposit/PayOut";
+    Deno.env.get("MOBCASH_PAYOUT_CONFIRM_PATH") ||
+    "/cashdbcore/Deposit/PayOut";
   const confirmed = await confirmPayout(
     session,
     { Token: token, Code: code, Amount: sum },
