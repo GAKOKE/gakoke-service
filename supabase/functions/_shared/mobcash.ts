@@ -26,6 +26,8 @@ export type MobCashSession = {
   userUniq: string;
   mobModel: string;
   cashId?: number;
+  /** Partner/ref id from JWT `idRef` after switchcashdesk — required by User/Get */
+  refId?: number;
 };
 
 async function resolveBaseUrl(explicit?: string): Promise<string> {
@@ -88,6 +90,29 @@ async function readJson(res: Response) {
 
 function isJwtLike(v: unknown): v is string {
   return typeof v === "string" && /^eyJ[A-Za-z0-9_-]+\./.test(v);
+}
+
+/** Decode JWT payload (no verify — MobCash tokens are opaque to us). */
+function jwtClaims(token: string): Record<string, unknown> {
+  try {
+    const raw = token.replace(/^Bearer\s+/i, "").split(".")[1];
+    if (!raw) return {};
+    let b64 = raw.replace(/-/g, "+").replace(/_/g, "/");
+    while (b64.length % 4) b64 += "=";
+    const json = atob(b64);
+    return JSON.parse(json) as Record<string, unknown>;
+  } catch {
+    return {};
+  }
+}
+
+/** Apply CashId / idRef from switchcashdesk JWT onto the session. */
+function applySessionClaims(session: MobCashSession) {
+  const claims = jwtClaims(session.token);
+  const cash = Number(claims.CashId ?? claims.cashId);
+  if (Number.isFinite(cash) && cash > 0) session.cashId = cash;
+  const ref = Number(claims.idRef ?? claims.IdRef ?? claims.pid);
+  if (Number.isFinite(ref) && ref > 0) session.refId = ref;
 }
 
 /** Cherche un JWT dans la réponse auth (structures MobCash variables). */
@@ -276,6 +301,7 @@ async function ensureCashdesk(session: MobCashSession, preferredCashId?: number)
     // errorCode 10 / authorization-failed : parfois la session est déjà sur la seule caisse
     if (ids.length === 1 && /errorCode\":10|authorization-failed|Авторизация/i.test(msg)) {
       session.cashId = cashId;
+      applySessionClaims(session);
       return;
     }
     throw new Error(
@@ -283,6 +309,7 @@ async function ensureCashdesk(session: MobCashSession, preferredCashId?: number)
     );
   }
   session.cashId = cashId;
+  applySessionClaims(session);
 }
 
 export async function getCashdesks(session: MobCashSession) {
@@ -322,6 +349,7 @@ export async function switchCashdesk(session: MobCashSession, cashId: number) {
     if (res.ok) {
       const next = extractAuthToken(body);
       if (next) session.token = next;
+      applySessionClaims(session);
       return body;
     }
     // 409 authorization-failed : ne pas retenter d'autres formes inutilement
@@ -338,28 +366,30 @@ export async function findPlayer(
   refId?: number,
 ) {
   const pid = String(playerId).trim();
+  if (!pid) throw new Error("User/Get: playerId vide");
   const pidNum = Number(pid);
-  // Sur MobCash, refId est en pratique l'id caisse (pas un constant "1")
+
+  // refId = partner id (JWT idRef après switch), PAS le CashId caisse.
+  // Ex. cashId=1371891 → idRef=216 dans le JWT.
+  applySessionClaims(session);
   const refs = [
     refId,
-    session.cashId,
-    0,
+    session.refId,
+    // fallbacks historiques si idRef absent du token
     1,
+    0,
+    session.cashId,
   ].filter((n): n is number => typeof n === "number" && Number.isFinite(n));
   const uniqueRefs = [...new Set(refs)];
 
   const payloads: Record<string, unknown>[] = [];
   for (const r of uniqueRefs) {
+    // Forme documentée MobCash v62.1
     payloads.push({ refId: r, userId: pid });
-    payloads.push({ RefId: r, UserId: pid });
     if (Number.isFinite(pidNum) && pidNum > 0) {
       payloads.push({ refId: r, userId: pidNum });
-      payloads.push({ RefId: r, UserId: pidNum });
     }
-  }
-  payloads.push({ userId: pid });
-  if (Number.isFinite(pidNum) && pidNum > 0) {
-    payloads.push({ UserId: pidNum });
+    payloads.push({ RefId: r, UserId: pid });
   }
 
   const attempts: string[] = [];
@@ -379,7 +409,7 @@ export async function findPlayer(
     if (res.status === 404) break;
   }
   throw new Error(
-    `${lastErr} (cashId=${session.cashId ?? "?"} jwt=${isJwtLike(session.token)}; tried ${attempts.slice(0, 6).join(" | ")})`,
+    `${lastErr} (cashId=${session.cashId ?? "?"} refId=${session.refId ?? "?"} jwt=${isJwtLike(session.token)}; tried ${attempts.slice(0, 8).join(" | ")})`,
   );
 }
 
