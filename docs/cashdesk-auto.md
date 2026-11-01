@@ -36,7 +36,7 @@ Sans `MOBCASH_LOGIN` / `PASSWORD`, le mode **dry-run** s’active automatiquemen
 ```bash
 cd ~/Workspace/gakoke-service
 supabase login
-supabase link --project-ref amxfuxywvqijgfkizwyh
+supabase link --project-ref YOUR_PROJECT_REF
 supabase db push
 supabase functions deploy cashdesk-auto
 supabase secrets set MOBCASH_LOGIN=... MOBCASH_PASSWORD=... MOBCASH_CASH_ID=...

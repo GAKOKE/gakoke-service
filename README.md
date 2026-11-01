@@ -3,7 +3,7 @@
 Cashdesk **semi-manuel** Mobile Money ↔ comptes de paris (marque Gakoke).  
 Stack : Vite + React + TypeScript (PWA légère) + **Supabase cloud** (Auth, Postgres+RLS, Realtime). Edge Functions optionnelles (fallback RLS côté client).
 
-Projet cloud lié : `amxfuxywvqijgfkizwyh` · https://amxfuxywvqijgfkizwyh.supabase.co
+Configurer `VITE_SUPABASE_URL` et `VITE_SUPABASE_ANON_KEY` via `.env.local` (dev) ou variables d’environnement Netlify (prod) — **ne jamais committer les valeurs réelles**.
 
 ## Prérequis
 
@@ -17,7 +17,7 @@ cd ~/Workspace/gakoke-service
 npm install
 
 # .env.local (voir .env.example) :
-#   VITE_SUPABASE_URL=https://amxfuxywvqijgfkizwyh.supabase.co
+#   VITE_SUPABASE_URL=https://YOUR_PROJECT_REF.supabase.co
 #   VITE_SUPABASE_ANON_KEY=<anon key Dashboard → Settings → API>
 
 npm run dev
@@ -25,25 +25,33 @@ npm run dev
 
 Ouvrir http://127.0.0.1:5173 — se connecter avec ton compte Gakoke.
 
-**Admin :** le compte `keligakoke@gmail.com` a le rôle `admin` → bouton **Ops** ou `/admin` (recharge la page / reconnecte-toi si le bouton n’apparaît pas).
+**Admin :** compte avec `profiles.role = admin` → bouton **Ops** ou `/admin` (reconnecte-toi si le bouton n’apparaît pas).
 
-**Seed cloud** (plateforme + MoMo + settings) déjà appliqué. Pour rejouer :
+**Seed cloud** (plateforme + MoMo + settings) :
 
 ```bash
-# avec SERVICE_ROLE_KEY du Dashboard
-SUPABASE_URL=https://amxfuxywvqijgfkizwyh.supabase.co \
+# SERVICE_ROLE_KEY depuis le Dashboard (ne pas committer)
+SUPABASE_URL=https://YOUR_PROJECT_REF.supabase.co \
 SUPABASE_SERVICE_ROLE_KEY=<service_role> \
 node scripts/seed-cloud.mjs
 ```
 
-**Edge Functions (optionnel)** — après `supabase login` :
+**Edge Functions** — après `supabase login` :
 
 ```bash
-supabase link --project-ref amxfuxywvqijgfkizwyh
+supabase link --project-ref YOUR_PROJECT_REF
 supabase functions deploy
 ```
 
-Sans deploy, dépôt / retrait / transitions admin passent par le client + RLS.
+Sans deploy, dépôt / retrait / transitions admin passent par le client + RLS.  
+Auto-caisse MobCash : voir [docs/cashdesk-auto.md](./docs/cashdesk-auto.md).
+
+## Netlify
+
+- Build : `npm run build`
+- Publish : `dist`
+- Env : `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`
+- Ne pas dupliquer la valeur réelle de `VITE_SUPABASE_URL` dans le dépôt (sinon secrets scanning échoue).
 
 ## Démarrage local (Docker, optionnel)
 
@@ -63,7 +71,7 @@ npm run dev
 
 **User :** inscription / connexion → Mes IDs → Dépôt (instructions MoMo + réf.) → Retrait → Historique (Realtime) → Profil + CGU/privacy.
 
-**Admin :** File ops → détail → crédité / payé MoMo / rejeté + notes → Config (limites, moyens MoMo) → Users.
+**Admin :** File ops → détail → crédité / payé MoMo / rejeté + notes → Config (limites, moyens MoMo, auto cashdesk) → Users.
 
 ## Structure
 
@@ -71,16 +79,12 @@ npm run dev
 src/                 SPA React
 supabase/migrations  Schéma + RLS
 supabase/seed.sql    1 bookmaker + 2 MoMo + settings
-supabase/functions   deposit / withdraw / admin-update-tx
-scripts/seed-users.mjs
+supabase/functions   deposit / withdraw / admin-update-tx / cashdesk-auto
+scripts/
+docs/cashdesk-auto.md
 ```
-
-## Hors MVP (différé)
-
-Auto-crédit bookmaker, webhooks MoMo, chat, push, multi-bookmakers, Google OAuth, polish PWA avancé.
 
 ## Notes
 
 - Juridiction / opérateurs MoMo / partenaire bookmaker encore ouverts (voir plan produit).
 - Textes légaux = placeholders Gakoke.
-- Pas de remote GitHub requis pour ce MVP local.
