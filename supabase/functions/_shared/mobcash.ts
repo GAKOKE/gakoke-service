@@ -15,7 +15,58 @@ export type MobCashConfig = {
   baseUrl?: string;
   /** Dry-run: n'appelle pas l'API réelle */
   dryRun?: boolean;
+  /** Secret TOTP base32 (automatisation serveur) */
+  totpSecret?: string;
+  /** Code TOTP à usage unique (saisie admin) */
+  totpCode?: string;
 };
+
+/** Enum CashDesk MfaRequestType — TOTP = 1 */
+const MFA_TYPE_TOTP = 1;
+
+/** RFC 6238 TOTP (SHA-1, 30s, 6 digits) from base32 secret. */
+export async function generateTotp(
+  base32Secret: string,
+  stepSeconds = 30,
+  digits = 6,
+): Promise<string> {
+  const key = base32ToBytes(base32Secret.replace(/\s+/g, "").toUpperCase());
+  const counter = Math.floor(Date.now() / 1000 / stepSeconds);
+  const buf = new ArrayBuffer(8);
+  const view = new DataView(buf);
+  view.setUint32(4, counter); // big-endian low 32 (enough for years)
+  const cryptoKey = await crypto.subtle.importKey(
+    "raw",
+    key,
+    { name: "HMAC", hash: "SHA-1" },
+    false,
+    ["sign"],
+  );
+  const mac = new Uint8Array(await crypto.subtle.sign("HMAC", cryptoKey, buf));
+  const offset = mac[mac.length - 1] & 0x0f;
+  const bin =
+    ((mac[offset] & 0x7f) << 24) |
+    ((mac[offset + 1] & 0xff) << 16) |
+    ((mac[offset + 2] & 0xff) << 8) |
+    (mac[offset + 3] & 0xff);
+  const otp = bin % 10 ** digits;
+  return String(otp).padStart(digits, "0");
+}
+
+function base32ToBytes(secret: string): Uint8Array {
+  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+  let bits = "";
+  for (const c of secret) {
+    const val = alphabet.indexOf(c);
+    if (val < 0) continue;
+    bits += val.toString(2).padStart(5, "0");
+  }
+  const bytes = [];
+  for (let i = 0; i + 8 <= bits.length; i += 8) {
+    bytes.push(parseInt(bits.slice(i, i + 8), 2));
+  }
+  return new Uint8Array(bytes);
+}
 
 export type MobCashSession = {
   baseUrl: string;
@@ -128,19 +179,60 @@ export async function mobcashLogin(cfg: MobCashConfig): Promise<MobCashSession> 
     throw new Error(`MobCash auth HTTP ${res.status}: ${JSON.stringify(body)}`);
   }
 
+  let authBody = body;
+
+  // MFA TOTP challenge
+  if (authBody?.MfaIsNeeded || authBody?.Data?.MfaIsNeeded) {
+    const mfaToken =
+      authBody.MfaToken ||
+      authBody.Data?.MfaToken ||
+      authBody.mfaToken;
+    const mfaType =
+      authBody.MfaRequestType ||
+      authBody.Data?.MfaRequestType ||
+      "TOTP";
+    if (!mfaToken) {
+      throw new Error(`MobCash MFA requis mais MfaToken manquant: ${JSON.stringify(authBody)}`);
+    }
+    if (String(mfaType).toUpperCase() !== "TOTP" && mfaType !== MFA_TYPE_TOTP) {
+      throw new Error(`MobCash MFA type non supporté: ${mfaType}`);
+    }
+
+    let code = cfg.totpCode?.trim();
+    if (!code && cfg.totpSecret?.trim()) {
+      code = await generateTotp(cfg.totpSecret.trim());
+    }
+    if (!code) {
+      const err = new Error(
+        "MobCash exige un code TOTP (2FA). Configure MOBCASH_TOTP_SECRET (secret base32) ou saisis un code à 6 chiffres au relancement.",
+      ) as Error & { status?: number; code?: string };
+      err.status = 401;
+      err.code = "mobcash_mfa_required";
+      throw err;
+    }
+
+    authBody = await verifyMfa(baseUrl, bare, {
+      login,
+      password,
+      version: cfg.version || "62.1",
+      mfaToken,
+      mfaAnswer: code,
+    });
+  }
+
   const token =
-    body?.Data?.Token ||
-    body?.Token ||
-    body?.AccessToken ||
-    body?.data?.token;
+    authBody?.Data?.Token ||
+    authBody?.Token ||
+    authBody?.AccessToken ||
+    authBody?.data?.token;
   if (!token) {
-    throw new Error(`MobCash auth: token manquant — ${JSON.stringify(body)}`);
+    throw new Error(`MobCash auth: token manquant — ${JSON.stringify(authBody)}`);
   }
 
   const session: MobCashSession = {
     baseUrl,
     token,
-    refreshToken: body?.Data?.RefreshToken || body?.RefreshToken,
+    refreshToken: authBody?.Data?.RefreshToken || authBody?.RefreshToken,
     ...ids,
   };
 
@@ -149,6 +241,50 @@ export async function mobcashLogin(cfg: MobCashConfig): Promise<MobCashSession> 
   }
 
   return session;
+}
+
+async function verifyMfa(
+  baseUrl: string,
+  bare: { appGuid: string; userUniq: string; mobModel: string; token: string },
+  input: {
+    login: string;
+    password: string;
+    version: string;
+    mfaToken: string;
+    mfaAnswer: string;
+  },
+) {
+  const res = await fetch(`${baseUrl}/agentservice/authorization/mfa`, {
+    method: "POST",
+    headers: headers(bare, false),
+    body: JSON.stringify({
+      request: {
+        Login: input.login,
+        Password: input.password,
+        Version: input.version,
+      },
+      MfaToken: input.mfaToken,
+      MfaRequestType: MFA_TYPE_TOTP,
+      MfaAnswer: input.mfaAnswer,
+    }),
+  });
+  const body = await readJson(res);
+  if (!res.ok) {
+    const title = body?.title;
+    const code = body?.errorCode;
+    if (res.status === 409 || code === 13) {
+      const err = new Error(
+        title
+          ? `MobCash MFA: ${title}`
+          : "MobCash MFA: code TOTP incorrect ou expiré.",
+      ) as Error & { status?: number; code?: string };
+      err.status = 401;
+      err.code = "mobcash_mfa_invalid";
+      throw err;
+    }
+    throw new Error(`MobCash MFA HTTP ${res.status}: ${JSON.stringify(body)}`);
+  }
+  return body;
 }
 
 export async function switchCashdesk(session: MobCashSession, cashId: number) {

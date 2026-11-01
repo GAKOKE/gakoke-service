@@ -24,12 +24,23 @@ Optionnels :
 
 | Secret | Rôle |
 |---|---|
+| `MOBCASH_TOTP_SECRET` | Secret **base32** de l’app d’authentification (2FA) — génère le code automatiquement |
 | `MOBCASH_BASE_URL` | Forcer le host (sinon DNS `mob-kassa.bet-1x.com`) |
 | `MOBCASH_APP_GUID` | ID appareil stable |
 | `MOBCASH_DRY_RUN=1` | Simule sans appeler l’API |
 | `MOBCASH_PAYOUT_CONFIRM_PATH` | Défaut `/cashdbcore/Deposit/PayOut` |
 
 Sans `MOBCASH_LOGIN` / `PASSWORD`, le mode **dry-run** s’active automatiquement.
+
+### MFA / TOTP (`MfaIsNeeded: true`)
+
+Si le compte caisse a la 2FA :
+
+1. **Auto (recommandé)** : enregistrer le secret TOTP base32  
+   `supabase secrets set MOBCASH_TOTP_SECRET='JBSWY3DPEHPK3PXP...'`
+2. **Manuel** : sur Admin → détail op → champ **Code TOTP** puis Relancer cashdesk API.
+
+Endpoint MobCash : `POST /agentservice/authorization/mfa` avec `MfaRequestType: 1` (TOTP).
 
 ## Déploiement
 

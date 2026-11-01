@@ -36,9 +36,10 @@ Deno.serve(async (req) => {
     if (userError || !user) return json({ error: "Session invalide" }, 401);
 
     const body = await req.json();
-    const { transaction_id, force } = body as {
+    const { transaction_id, force, totp_code } = body as {
       transaction_id?: string;
       force?: boolean;
+      totp_code?: string;
     };
     if (!transaction_id) return json({ error: "transaction_id requis" }, 400);
 
@@ -79,7 +80,10 @@ Deno.serve(async (req) => {
       return json({ skipped: true, reason: "provider_none", transaction: tx });
     }
 
-    const cfg = buildConfig(tx.player_accounts?.platforms?.cashdesk_cash_id);
+    const cfg = buildConfig(
+      tx.player_accounts?.platforms?.cashdesk_cash_id,
+      totp_code,
+    );
 
     if (tx.type === "deposit") {
       if (!force && !settings?.auto_deposit) {
@@ -195,7 +199,10 @@ Deno.serve(async (req) => {
   }
 });
 
-function buildConfig(cashId?: number | null): MobCashConfig {
+function buildConfig(
+  cashId?: number | null,
+  totpCode?: string,
+): MobCashConfig {
   const login = Deno.env.get("MOBCASH_LOGIN") || "";
   const password = Deno.env.get("MOBCASH_PASSWORD") || "";
   const dryEnv = Deno.env.get("MOBCASH_DRY_RUN") === "1";
@@ -207,6 +214,8 @@ function buildConfig(cashId?: number | null): MobCashConfig {
     cashId: cashId ?? (cashIdEnv ? Number(cashIdEnv) : undefined),
     baseUrl: Deno.env.get("MOBCASH_BASE_URL") || undefined,
     appGuid: Deno.env.get("MOBCASH_APP_GUID") || undefined,
+    totpSecret: Deno.env.get("MOBCASH_TOTP_SECRET") || undefined,
+    totpCode: totpCode?.trim() || undefined,
     dryRun,
   };
 }
