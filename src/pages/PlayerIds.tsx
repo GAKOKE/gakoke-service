@@ -12,9 +12,11 @@ export function PlayerIds() {
   const [label, setLabel] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [loading, setLoading] = useState(true);
 
   async function load() {
-    const [{ data: plats }, { data: accs }] = await Promise.all([
+    setLoading(true);
+    const [{ data: plats, error: platErr }, { data: accs }] = await Promise.all([
       supabase.from("platforms").select("*").eq("active", true).maybeSingle(),
       supabase
         .from("player_accounts")
@@ -23,6 +25,16 @@ export function PlayerIds() {
     ]);
     setPlatform(plats);
     setAccounts((accs as PlayerAccount[]) ?? []);
+    if (platErr) {
+      setError(platErr.message);
+    } else if (!plats) {
+      setError(
+        "Aucune plateforme bookmaker active. Lancez `supabase db reset` puis `node scripts/seed-users.mjs`, ou activez-en une en admin → Config.",
+      );
+    } else {
+      setError(null);
+    }
+    setLoading(false);
   }
 
   useEffect(() => {
@@ -85,8 +97,17 @@ export function PlayerIds() {
           />
         </label>
         {error && <p className="error">{error}</p>}
-        <button className="btn btn-primary btn-block" disabled={busy || !platform}>
-          {busy ? "Ajout…" : "Ajouter l’ID"}
+        {!loading && !platform && (
+          <p className="muted">
+            Bouton désactivé : pas de plateforme active en base (seed / config
+            admin).
+          </p>
+        )}
+        <button
+          className="btn btn-primary btn-block"
+          disabled={busy || loading || !platform}
+        >
+          {busy ? "Ajout…" : loading ? "Chargement…" : "Ajouter l’ID"}
         </button>
       </form>
 
