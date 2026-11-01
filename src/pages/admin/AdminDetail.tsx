@@ -7,6 +7,15 @@ import { adminUpdateTx } from "../../lib/ops";
 import { supabase } from "../../lib/supabase";
 import type { Transaction } from "../../lib/types";
 
+async function retryCashdesk(transactionId: string) {
+  const { data, error } = await supabase.functions.invoke("cashdesk-auto", {
+    body: { transaction_id: transactionId, force: true },
+  });
+  if (error) throw new Error(error.message);
+  if (data?.error) throw new Error(data.error);
+  return data?.transaction as Transaction | undefined;
+}
+
 export function AdminDetail() {
   const { id } = useParams();
   const [tx, setTx] = useState<Transaction | null>(null);
@@ -120,6 +129,15 @@ export function AdminDetail() {
           {tx.rejection_reason && (
             <p className="error">Rejet : {tx.rejection_reason}</p>
           )}
+          <p>
+            <strong>Cashdesk</strong>
+            <br />
+            {tx.cashdesk_status ?? "—"}
+            {tx.cashdesk_ref ? ` · réf ${tx.cashdesk_ref}` : ""}
+          </p>
+          {tx.cashdesk_error && (
+            <p className="error">{tx.cashdesk_error}</p>
+          )}
         </div>
 
         <div className="panel stack">
@@ -168,6 +186,27 @@ export function AdminDetail() {
               </button>
             </form>
           )}
+
+          <button
+            type="button"
+            className="btn btn-ghost btn-block"
+            disabled={busy}
+            onClick={async () => {
+              setBusy(true);
+              setError(null);
+              try {
+                const updated = await retryCashdesk(tx.id);
+                if (updated) setTx(updated);
+                await load();
+              } catch (err) {
+                setError(err instanceof Error ? err.message : String(err));
+              } finally {
+                setBusy(false);
+              }
+            }}
+          >
+            Relancer cashdesk API
+          </button>
 
           {error && <p className="error">{error}</p>}
         </div>

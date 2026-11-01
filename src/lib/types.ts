@@ -24,6 +24,9 @@ export interface Platform {
   id: string;
   name: string;
   active: boolean;
+  cashdesk_provider?: string;
+  cashdesk_cash_id?: number | null;
+  cashdesk_notes?: string | null;
 }
 
 export interface PlayerAccount {
@@ -57,6 +60,8 @@ export interface Settings {
   maintenance: boolean;
   help_deposit: string | null;
   help_withdrawal: string | null;
+  auto_deposit?: boolean;
+  auto_withdrawal?: boolean;
 }
 
 export interface Transaction {
@@ -73,6 +78,10 @@ export interface Transaction {
   status: TxStatus;
   admin_note: string | null;
   rejection_reason: string | null;
+  cashdesk_status?: string | null;
+  cashdesk_ref?: string | null;
+  cashdesk_error?: string | null;
+  cashdesk_at?: string | null;
   created_at: string;
   updated_at: string;
   player_accounts?: PlayerAccount;

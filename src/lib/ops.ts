@@ -1,6 +1,25 @@
 import { supabase } from "./supabase";
 import type { Settings, Transaction } from "./types";
 
+/** Fire-and-observe cashdesk automation (Edge Function). Non-blocking for caller if skipped. */
+async function triggerCashdeskAuto(transactionId: string): Promise<Transaction | null> {
+  try {
+    const { data, error } = await supabase.functions.invoke("cashdesk-auto", {
+      body: { transaction_id: transactionId },
+    });
+    if (error) {
+      console.warn("cashdesk-auto invoke:", error.message);
+      return null;
+    }
+    if (data?.transaction) return data.transaction as Transaction;
+    if (data?.error) console.warn("cashdesk-auto:", data.error);
+    return null;
+  } catch (e) {
+    console.warn("cashdesk-auto failed", e);
+    return null;
+  }
+}
+
 async function getSettings(): Promise<Settings> {
   const { data, error } = await supabase
     .from("settings")
@@ -82,7 +101,7 @@ export async function attachDepositRef(input: {
   payment_ref: string;
 }): Promise<Transaction> {
   const body = { action: "attach_ref", ...input };
-  return invokeOrFallback("deposit", body, async () => {
+  const tx = await invokeOrFallback("deposit", body, async () => {
     const {
       data: { user },
     } = await supabase.auth.getUser();
@@ -113,6 +132,8 @@ export async function attachDepositRef(input: {
     if (error) throw new Error(error.message);
     return data as Transaction;
   });
+  const auto = await triggerCashdeskAuto(tx.id);
+  return auto ?? tx;
 }
 
 export async function createWithdrawal(input: {
@@ -122,7 +143,7 @@ export async function createWithdrawal(input: {
   withdrawal_code: string;
   momo_phone: string;
 }): Promise<Transaction> {
-  return invokeOrFallback("withdraw", input, async () => {
+  const tx = await invokeOrFallback("withdraw", input, async () => {
     const {
       data: { user },
     } = await supabase.auth.getUser();
@@ -158,6 +179,8 @@ export async function createWithdrawal(input: {
     if (error) throw new Error(error.message);
     return data as Transaction;
   });
+  const auto = await triggerCashdeskAuto(tx.id);
+  return auto ?? tx;
 }
 
 export async function adminUpdateTx(input: {

@@ -43,6 +43,8 @@ export function AdminSettings() {
         help_deposit: settings.help_deposit,
         help_withdrawal: settings.help_withdrawal,
         currency: settings.currency,
+        auto_deposit: settings.auto_deposit ?? false,
+        auto_withdrawal: settings.auto_withdrawal ?? false,
       })
       .eq("id", 1);
     setBusy(false);
@@ -159,6 +161,30 @@ export function AdminSettings() {
           />
           Mode maintenance
         </label>
+        <label className="row" style={{ fontWeight: 600 }}>
+          <input
+            type="checkbox"
+            checked={settings.auto_deposit ?? false}
+            onChange={(e) =>
+              setSettings({ ...settings, auto_deposit: e.target.checked })
+            }
+          />
+          Auto-crédit bookmaker (MobCash) après réf. MoMo
+        </label>
+        <label className="row" style={{ fontWeight: 600 }}>
+          <input
+            type="checkbox"
+            checked={settings.auto_withdrawal ?? false}
+            onChange={(e) =>
+              setSettings({ ...settings, auto_withdrawal: e.target.checked })
+            }
+          />
+          Auto-encaisser code retrait (MobCash) — MoMo reste manuel
+        </label>
+        <p className="muted">
+          Secrets serveur requis : MOBCASH_LOGIN, MOBCASH_PASSWORD,
+          MOBCASH_CASH_ID (voir docs/cashdesk-auto.md). Sans secrets → dry-run.
+        </p>
         <button className="btn btn-primary btn-block" disabled={busy}>
           Enregistrer les limites
         </button>
