@@ -262,10 +262,25 @@ function deskId(d: Record<string, unknown>): number | null {
   return Number.isFinite(n) && n > 0 ? n : null;
 }
 
+/** Partner/ref id sometimes present on cashdesk rows (fallback if JWT idRef empty). */
+function deskRefId(d: Record<string, unknown>): number | null {
+  const n = Number(
+    d?.IdRef ?? d?.idRef ?? d?.RefId ?? d?.refId ?? d?.PartnerId ?? d?.pid,
+  );
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
 function deskLabel(d: Record<string, unknown>): string {
   const id = deskId(d);
   const name = String(d?.CashName ?? d?.cashName ?? d?.Name ?? "");
-  return name ? `${id}:${name}` : String(id);
+  const ref = deskRefId(d);
+  const base = name ? `${id}:${name}` : String(id);
+  return ref ? `${base}(ref=${ref})` : base;
+}
+
+function claimSummary(session: MobCashSession): string {
+  const c = jwtClaims(session.token);
+  return `jwt.CashId=${c.CashId ?? ""} jwt.idRef=${c.idRef ?? ""} jwt.pid=${c.pid ?? ""} jwt.status=${c.statusCashdesk ?? ""}`;
 }
 
 async function ensureCashdesk(session: MobCashSession, preferredCashId?: number) {
@@ -294,22 +309,40 @@ async function ensureCashdesk(session: MobCashSession, preferredCashId?: number)
     );
   }
 
+  const selected =
+    desks.find((d) => deskId(d as Record<string, unknown>) === cashId) ??
+    desks[0];
+  const deskRef = deskRefId(selected as Record<string, unknown>);
+  if (deskRef) session.refId = deskRef;
+
   try {
     await switchCashdesk(session, cashId);
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    // errorCode 10 / authorization-failed : parfois la session est déjà sur la seule caisse
-    if (ids.length === 1 && /errorCode\":10|authorization-failed|Авторизация/i.test(msg)) {
-      session.cashId = cashId;
-      applySessionClaims(session);
+    applySessionClaims(session);
+    // 409 only OK if JWT is already bound to this cashdesk (has CashId + idRef)
+    const bound =
+      session.cashId === cashId && typeof session.refId === "number" &&
+      session.refId > 0;
+    if (
+      bound && ids.length === 1 &&
+      /errorCode\":10|authorization-failed|Авторизация/i.test(msg)
+    ) {
       return;
     }
     throw new Error(
-      `${msg} — caisses dispo: ${desks.map((d) => deskLabel(d as Record<string, unknown>)).join(", ")}`,
+      `${msg} — caisses dispo: ${desks.map((d) => deskLabel(d as Record<string, unknown>)).join(", ")}; ${claimSummary(session)}`,
     );
   }
   session.cashId = cashId;
   applySessionClaims(session);
+  if (deskRef && !session.refId) session.refId = deskRef;
+
+  if (!session.refId) {
+    throw new Error(
+      `Session caisse sans idRef après switch (User/Get impossible). ${claimSummary(session)} — desks: ${desks.map((d) => deskLabel(d as Record<string, unknown>)).join(", ")} | raw=${JSON.stringify(selected).slice(0, 400)}`,
+    );
+  }
 }
 
 export async function getCashdesks(session: MobCashSession) {
@@ -331,7 +364,12 @@ export async function getCashdesks(session: MobCashSession) {
 }
 
 export async function switchCashdesk(session: MobCashSession, cashId: number) {
-  const payloads = [{ CashId: cashId }, { cashId }, { Id: cashId }];
+  const payloads = [
+    { CashId: cashId },
+    { CashId: String(cashId) },
+    { cashId },
+    { Id: cashId },
+  ];
   let lastBody: unknown;
   let lastStatus = 0;
   for (const payload of payloads) {
@@ -350,6 +388,13 @@ export async function switchCashdesk(session: MobCashSession, cashId: number) {
       const next = extractAuthToken(body);
       if (next) session.token = next;
       applySessionClaims(session);
+      // Switch OK doit lier CashId dans le JWT — sinon User/Get renvoie 400
+      const claims = jwtClaims(session.token);
+      if (!claims.CashId && !claims.cashId) {
+        throw new Error(
+          `switchcashdesk OK mais JWT sans CashId (${claimSummary(session)}); body=${JSON.stringify(body).slice(0, 300)}`,
+        );
+      }
       return body;
     }
     // 409 authorization-failed : ne pas retenter d'autres formes inutilement
@@ -409,7 +454,7 @@ export async function findPlayer(
     if (res.status === 404) break;
   }
   throw new Error(
-    `${lastErr} (cashId=${session.cashId ?? "?"} refId=${session.refId ?? "?"} jwt=${isJwtLike(session.token)}; tried ${attempts.slice(0, 8).join(" | ")})`,
+    `${lastErr} (cashId=${session.cashId ?? "?"} refId=${session.refId ?? "?"} ${claimSummary(session)}; tried ${attempts.slice(0, 8).join(" | ")})`,
   );
 }
 
