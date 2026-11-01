@@ -335,13 +335,34 @@ export async function switchCashdesk(session: MobCashSession, cashId: number) {
 export async function findPlayer(
   session: MobCashSession,
   playerId: string,
-  refId = 1,
+  refId?: number,
 ) {
-  const payloads = [
-    { refId, userId: String(playerId) },
-    { RefId: refId, UserId: String(playerId) },
-    { userId: String(playerId) },
-  ];
+  const pid = String(playerId).trim();
+  const pidNum = Number(pid);
+  // Sur MobCash, refId est en pratique l'id caisse (pas un constant "1")
+  const refs = [
+    refId,
+    session.cashId,
+    0,
+    1,
+  ].filter((n): n is number => typeof n === "number" && Number.isFinite(n));
+  const uniqueRefs = [...new Set(refs)];
+
+  const payloads: Record<string, unknown>[] = [];
+  for (const r of uniqueRefs) {
+    payloads.push({ refId: r, userId: pid });
+    payloads.push({ RefId: r, UserId: pid });
+    if (Number.isFinite(pidNum) && pidNum > 0) {
+      payloads.push({ refId: r, userId: pidNum });
+      payloads.push({ RefId: r, UserId: pidNum });
+    }
+  }
+  payloads.push({ userId: pid });
+  if (Number.isFinite(pidNum) && pidNum > 0) {
+    payloads.push({ UserId: pidNum });
+  }
+
+  const attempts: string[] = [];
   let lastErr = "";
   for (const payload of payloads) {
     const res = await fetch(`${session.baseUrl}/cashdbcore/User/Get`, {
@@ -350,13 +371,15 @@ export async function findPlayer(
       body: JSON.stringify(payload),
     });
     const body = await readJson(res);
+    attempts.push(`${res.status}:${JSON.stringify(payload)}`);
     if (res.ok) return body;
     lastErr = `User/Get HTTP ${res.status}: ${JSON.stringify(body)}`;
-    // Si 401, inutile d'essayer d'autres payloads
     if (res.status === 401) break;
+    // 404 joueur inconnu → inutile de continuer toutes les variantes
+    if (res.status === 404) break;
   }
   throw new Error(
-    `${lastErr} (cashId=${session.cashId ?? "?"} jwt=${isJwtLike(session.token)})`,
+    `${lastErr} (cashId=${session.cashId ?? "?"} jwt=${isJwtLike(session.token)}; tried ${attempts.slice(0, 6).join(" | ")})`,
   );
 }
 
